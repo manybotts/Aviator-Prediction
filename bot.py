@@ -1,11 +1,14 @@
-# Aviator Prediction Telegram Bot
+# Aviator Prediction Telegram Bot with Machine Learning
 
 import logging
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 import re
 import os
-from flask import Flask, request
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
+from joblib import dump, load
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -14,8 +17,23 @@ logger = logging.getLogger(__name__)
 # Store historical crash points
 historical_data = []
 
-# Function to analyze crash points and predict next outcome
+# Load or train the ML model
+def load_or_train_model():
+    model_path = "random_forest_model.joblib"
+    if os.path.exists(model_path):
+        return load(model_path)
+    else:
+        # Train a new model if no saved model exists
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+        dump(model, model_path)
+        return model
+
+model = load_or_train_model()
+
+# Function to predict next outcome using ML
 def predict_aviator_outcome(crash_points):
+    global model
+
     # Convert crash points to numbers
     numbers = [float(point) for point in crash_points if re.match(r'^\d+(\.\d+)?$', point)]
 
@@ -24,35 +42,23 @@ def predict_aviator_outcome(crash_points):
     if count == 0:
         return "No valid crash points found. Please provide numeric data."
 
-    # Calculate basic statistics
-    average = sum(numbers) / count
-    std_dev = (sum((x - average) ** 2 for x in numbers) / count) ** 0.5
+    # Update the model with new data
+    if count > 1:
+        df = pd.DataFrame({"CrashPoints": numbers[:-1], "NextOutcome": numbers[1:]})
+        X = df[["CrashPoints"]].values
+        y = df["NextOutcome"].values
+        model.fit(X, y)
 
-    # Weighted Average (More weight to recent data)
-    weighted_average = 0
-    total_weight = 0
-    for i in range(count):
-        weight = count - i  # More weight to recent data
-        weighted_average += numbers[i] * weight
-        total_weight += weight
-    weighted_average /= total_weight
+        # Save the updated model
+        dump(model, "random_forest_model.joblib")
 
-    # Exponential Smoothing (Adaptive prediction)
-    alpha = 0.5  # Smoothing factor (adjust as needed)
-    exponential_smooth = numbers[-1]
-    for i in range(count - 2, -1, -1):
-        exponential_smooth = (alpha * numbers[i]) + ((1 - alpha) * exponential_smooth)
-
-    # Combine predictions
-    predicted_outcome = (weighted_average + exponential_smooth) / 2 * 0.8  # Slightly below average for safety
+    # Predict the next outcome
+    last_point = np.array([[numbers[-1]]])
+    predicted_outcome = model.predict(last_point)[0]
 
     # Output results
     result = (
         f"📊 Historical Crash Points: {', '.join(map(str, numbers))}\n"
-        f"🔍 Average Crash Point: {average:.2f}\n"
-        f"⚖️ Standard Deviation: {std_dev:.2f}\n"
-        f"🎯 Weighted Average: {weighted_average:.2f}\n"
-        f"🎉 Exponential Smoothed Prediction: {exponential_smooth:.2f}\n"
         f"⚡ Predicted Next Outcome: {predicted_outcome:.2f}"
     )
     return result
@@ -102,15 +108,17 @@ def error_handler(update: object, context: CallbackContext):
     context.bot.send_message(chat_id=update.effective_chat.id, text="An unexpected error occurred.")
 
 
-# Initialize the bot
-def init_bot():
+# Main function
+def main():
+    # Load environment variables
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     PORT = int(os.getenv("PORT", "8443"))
 
     if not TOKEN:
         logger.error(" TELEGRAM_BOT_TOKEN environment variable is missing.")
-        return None
+        return
 
+    # Initialize the bot
     updater = Updater(TOKEN, use_context=True)
     dispatcher = updater.dispatcher
 
@@ -121,41 +129,24 @@ def init_bot():
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, process_crash_points))
     dispatcher.add_error_handler(error_handler)
 
-    return updater
+    # Webhook setup for Heroku deployment
+    if os.getenv("HEROKU_APP_NAME"):
+        HEROKU_URL = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/"
+        webhook_url = f"{HEROKU_URL}{TOKEN}"
+        logger.info(f"Starting webhook on {webhook_url}")
+        updater.start_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=TOKEN,
+            webhook_url=webhook_url
+        )
+    else:
+        logger.info("Starting polling mode (local testing)")
+        updater.start_polling()
 
-
-# Flask App for Gunicorn Compatibility
-app = Flask(__name__)
-updater = init_bot()
-
-@app.route('/<token>', methods=['POST'])
-def webhook(token):
-    if updater and token == os.getenv("TELEGRAM_BOT_TOKEN"):
-        # Pass the request body to the Telegram bot
-        update = Update.de_json(request.json, updater.bot)
-        updater.dispatcher.process_update(update)
-    return '', 200
-
-
-@app.route('/')
-def index():
-    return "Aviator Prediction Bot is running!", 200
+    # Run the bot
+    updater.idle()
 
 
 if __name__ == "__main__":
-    if updater:
-        HEROKU_APP_NAME = os.getenv("HEROKU_APP_NAME")
-        if HEROKU_APP_NAME:
-            HEROKU_URL = f"https://{HEROKU_APP_NAME}.herokuapp.com/"
-            webhook_url = f"{HEROKU_URL}{os.getenv('TELEGRAM_BOT_TOKEN')}"
-            logger.info(f"Starting webhook on {webhook_url}")
-            updater.start_webhook(
-                listen="0.0.0.0",
-                port=int(os.getenv("PORT", "8443")),
-                url_path=os.getenv("TELEGRAM_BOT_TOKEN"),
-                webhook_url=webhook_url
-            )
-        else:
-            logger.info("Starting polling mode (local testing)")
-            updater.start_polling()
-        updater.idle()
+    main()
