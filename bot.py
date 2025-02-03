@@ -10,6 +10,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from joblib import dump, load
 from flask import Flask, request
+import requests
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -32,16 +33,19 @@ def load_or_train_model(context):
             # Initialize the Bot instance
             bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
 
-            # Download the model file from the Telegram channel
+            # Get the file path from Telegram
             file_info = bot.get_file(MODEL_FILE_ID)
             file_path = file_info.file_path
-            response = bot.request.get(file_path)
 
-            # Save the downloaded file locally
-            with open("random_forest_model.joblib", "wb") as f:
-                f.write(response.content)
-            logger.info("Model file downloaded successfully.")
-            return load("random_forest_model.joblib")
+            # Download the file using the requests library
+            response = requests.get(file_path)
+            if response.status_code == 200:
+                with open("random_forest_model.joblib", "wb") as f:
+                    f.write(response.content)
+                logger.info("Model file downloaded successfully.")
+                return load("random_forest_model.joblib")
+            else:
+                logger.error(f"Failed to download model file. Status code: {response.status_code}")
         except Exception as e:
             logger.error(f"Failed to download model from Telegram: {e}")
 
