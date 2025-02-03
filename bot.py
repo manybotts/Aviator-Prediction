@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from joblib import dump, load
+from flask import Flask, request
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -108,17 +109,15 @@ def error_handler(update: object, context: CallbackContext):
     context.bot.send_message(chat_id=update.effective_chat.id, text="An unexpected error occurred.")
 
 
-# Main function
-def main():
-    # Load environment variables
+# Initialize the bot
+def init_bot():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     PORT = int(os.getenv("PORT", "8443"))
 
     if not TOKEN:
         logger.error(" TELEGRAM_BOT_TOKEN environment variable is missing.")
-        return
+        return None
 
-    # Initialize the bot
     updater = Updater(TOKEN, use_context=True)
     dispatcher = updater.dispatcher
 
@@ -129,24 +128,41 @@ def main():
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, process_crash_points))
     dispatcher.add_error_handler(error_handler)
 
-    # Webhook setup for Heroku deployment
-    if os.getenv("HEROKU_APP_NAME"):
-        HEROKU_URL = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/"
-        webhook_url = f"{HEROKU_URL}{TOKEN}"
-        logger.info(f"Starting webhook on {webhook_url}")
-        updater.start_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path=TOKEN,
-            webhook_url=webhook_url
-        )
-    else:
-        logger.info("Starting polling mode (local testing)")
-        updater.start_polling()
+    return updater
 
-    # Run the bot
-    updater.idle()
+
+# Flask App for Gunicorn Compatibility
+app = Flask(__name__)
+updater = init_bot()
+
+@app.route('/<token>', methods=['POST'])
+def webhook(token):
+    if updater and token == os.getenv("TELEGRAM_BOT_TOKEN"):
+        # Pass the request body to the Telegram bot
+        update = Update.de_json(request.json, updater.bot)
+        updater.dispatcher.process_update(update)
+    return '', 200
+
+
+@app.route('/')
+def index():
+    return "Aviator Prediction Bot is running!", 200
 
 
 if __name__ == "__main__":
-    main()
+    if updater:
+        HEROKU_APP_NAME = os.getenv("HEROKU_APP_NAME")
+        if HEROKU_APP_NAME:
+            HEROKU_URL = f"https://{HEROKU_APP_NAME}.herokuapp.com/"
+            webhook_url = f"{HEROKU_URL}{os.getenv('TELEGRAM_BOT_TOKEN')}"
+            logger.info(f"Starting webhook on {webhook_url}")
+            updater.start_webhook(
+                listen="0.0.0.0",
+                port=int(os.getenv("PORT", "8443")),
+                url_path=os.getenv("TELEGRAM_BOT_TOKEN"),
+                webhook_url=webhook_url
+            )
+        else:
+            logger.info("Starting polling mode (local testing)")
+            updater.start_polling()
+        updater.idle()
