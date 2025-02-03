@@ -28,6 +28,9 @@ MODEL_FILE_ID = os.getenv("TELEGRAM_MODEL_FILE_ID")
 def load_or_train_model(context):
     global MODEL_FILE_ID
 
+    # Define the local model file path
+    model_file = "random_forest_model.joblib"
+
     if MODEL_FILE_ID:
         try:
             # Initialize the Bot instance
@@ -35,25 +38,90 @@ def load_or_train_model(context):
 
             # Get the file path from Telegram
             file_info = bot.get_file(MODEL_FILE_ID)
+            logger.info(f"File Info: {file_info}")
+
+            # Extract the file path
             file_path = file_info.file_path
+            if not file_path:
+                logger.error("File path is empty or invalid.")
+                return regenerate_and_upload_model(context)
+
+            # Construct the full file URL
+            file_url = f"https://api.telegram.org/file/bot{os.getenv('TELEGRAM_BOT_TOKEN')}/{file_path}"
+            logger.info(f"Downloading model from: {file_url}")
 
             # Download the file using the requests library
-            response = requests.get(file_path)
+            response = requests.get(file_url)
             if response.status_code == 200:
-                with open("random_forest_model.joblib", "wb") as f:
+                with open(model_file, "wb") as f:
                     f.write(response.content)
-                logger.info("Model file downloaded successfully.")
-                return load("random_forest_model.joblib")
+
+                # Check if the file is valid
+                if validate_model_file(model_file):
+                    model = joblib.load(model_file)
+                    logger.info("Model file loaded successfully.")
+                    return model
+                else:
+                    logger.error("Downloaded model file is invalid or corrupted.")
+                    return regenerate_and_upload_model(context)
             else:
-                logger.error(f"Failed to download model file. Status code: {response.status_code}")
+                logger.error(f"Failed to download model file. Status code: {response.status_code}, Response: {response.text}")
+                return regenerate_and_upload_model(context)
         except Exception as e:
             logger.error(f"Failed to download model from Telegram: {e}")
+            return regenerate_and_upload_model(context)
 
     # If no model exists, train a new one
     logger.info("Training a new model...")
     model = RandomForestRegressor(n_estimators=100, random_state=42)
-    dump(model, "random_forest_model.joblib")
+    dump(model, model_file)
     return model
+
+
+# Function to validate the model file
+def validate_model_file(file_path):
+    if not os.path.exists(file_path):
+        logger.error("Model file does not exist.")
+        return False
+
+    file_size = os.path.getsize(file_path)
+    if file_size == 0:
+        logger.error("Model file is empty.")
+        return False
+
+    try:
+        # Attempt to load the model
+        model = joblib.load(file_path)
+        logger.info("Model file validation successful.")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to validate model file: {e}")
+        return False
+
+
+# Function to regenerate and upload the model
+def regenerate_and_upload_model(context):
+    global MODEL_FILE_ID
+
+    logger.info("Regenerating and uploading a new model...")
+
+    # Train a new model
+    model_file = "random_forest_model.joblib"
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    dump(model, model_file)
+
+    # Upload the new model to Telegram
+    try:
+        bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
+        with open(model_file, "rb") as f:
+            sent_file = bot.send_document(chat_id=CHANNEL_ID, document=f)
+            MODEL_FILE_ID = sent_file.document.file_id
+            logger.info(f"New model uploaded successfully. File ID: {MODEL_FILE_ID}")
+        return model
+    except Exception as e:
+        logger.error(f"Failed to upload new model to Telegram: {e}")
+        logger.warning("Using default model for now.")
+        return model
 
 
 # Function to predict next outcome using ML
