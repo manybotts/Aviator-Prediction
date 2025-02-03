@@ -1,4 +1,4 @@
-# Aviator Prediction Telegram Bot with Machine Learning
+# Aviator Prediction Telegram Bot with Reinforcement Learning
 
 import logging
 from telegram import Update
@@ -9,14 +9,14 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from joblib import dump, load
-from flask import Flask, request
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Store historical crash points
+# Store historical crash points and feedback
 historical_data = []
+feedback_data = []
 
 # Load or train the ML model
 def load_or_train_model():
@@ -60,9 +60,36 @@ def predict_aviator_outcome(crash_points):
     # Output results
     result = (
         f"📊 Historical Crash Points: {', '.join(map(str, numbers))}\n"
-        f"⚡ Predicted Next Outcome: {predicted_outcome:.2f}"
+        f"⚡ Predicted Next Outcome: {predicted_outcome:.2f}\n"
+        f"❓ Was the prediction correct? Reply with 'yes' or 'no'."
     )
-    return result
+    return result, predicted_outcome
+
+
+# Function to update the model based on feedback
+def update_model_with_feedback(feedback, actual_value, predicted_value):
+    global model
+
+    if feedback.lower() == "yes":
+        logger.info("Feedback: Prediction was correct.")
+    elif feedback.lower() == "no":
+        logger.info("Feedback: Prediction was incorrect. Updating model...")
+
+        # Add the actual value to the dataset
+        historical_data.append(str(actual_value))
+
+        # Retrain the model with the updated dataset
+        numbers = [float(point) for point in historical_data]
+        if len(numbers) > 1:
+            df = pd.DataFrame({"CrashPoints": numbers[:-1], "NextOutcome": numbers[1:]})
+            X = df[["CrashPoints"]].values
+            y = df["NextOutcome"].values
+            model.fit(X, y)
+
+            # Save the updated model
+            dump(model, "random_forest_model.joblib")
+    else:
+        logger.warning("Invalid feedback received.")
 
 
 # Command handlers
@@ -77,17 +104,18 @@ def help_command(update: Update, context: CallbackContext):
         "To use this bot:\n"
         "- Enter crash points separated by commas (e.g., 2.5, 3.1, 4.0).\n"
         "- The bot will analyze the data and predict the next outcome.\n"
-        "- Type /clear to reset the historical data."
+        "- Provide feedback ('yes' or 'no') to help the bot learn."
     )
 
 
 def clear_data(update: Update, context: CallbackContext):
-    global historical_data
+    global historical_data, feedback_data
     historical_data = []
-    update.message.reply_text("Historical data has been cleared.")
+    feedback_data = []
+    update.message.reply_text("Historical data and feedback have been cleared.")
 
 
-# Message handler
+# Message handler for crash points
 def process_crash_points(update: Update, context: CallbackContext):
     global historical_data
 
@@ -99,8 +127,41 @@ def process_crash_points(update: Update, context: CallbackContext):
     historical_data.extend(new_crash_points)
 
     # Predict next outcome
-    prediction = predict_aviator_outcome(historical_data)
-    update.message.reply_text(prediction)
+    prediction_message, predicted_value = predict_aviator_outcome(historical_data)
+    update.message.reply_text(prediction_message)
+
+    # Store the predicted value for later feedback
+    context.user_data["predicted_value"] = predicted_value
+
+
+# Message handler for feedback
+def process_feedback(update: Update, context: CallbackContext):
+    feedback = update.message.text.strip().lower()
+    predicted_value = context.user_data.get("predicted_value")
+
+    if predicted_value is None:
+        update.message.reply_text("No recent prediction found. Please enter crash points first.")
+        return
+
+    # Ask for the actual value
+    update.message.reply_text("Please provide the actual value for the last prediction:")
+    context.user_data["feedback"] = feedback
+
+
+# Handle actual value input
+def process_actual_value(update: Update, context: CallbackContext):
+    actual_value = update.message.text.strip()
+    feedback = context.user_data.get("feedback")
+    predicted_value = context.user_data.get("predicted_value")
+
+    if not actual_value.isdigit() or float(actual_value) <= 0:
+        update.message.reply_text("Invalid actual value. Please provide a positive number.")
+        return
+
+    # Update the model with feedback
+    update_model_with_feedback(feedback, float(actual_value), predicted_value)
+
+    update.message.reply_text("Thank you for your feedback! The model has been updated.")
 
 
 # Error handler
@@ -109,15 +170,17 @@ def error_handler(update: object, context: CallbackContext):
     context.bot.send_message(chat_id=update.effective_chat.id, text="An unexpected error occurred.")
 
 
-# Initialize the bot
-def init_bot():
+# Main function
+def main():
+    # Load environment variables
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     PORT = int(os.getenv("PORT", "8443"))
 
     if not TOKEN:
         logger.error(" TELEGRAM_BOT_TOKEN environment variable is missing.")
-        return None
+        return
 
+    # Initialize the bot
     updater = Updater(TOKEN, use_context=True)
     dispatcher = updater.dispatcher
 
@@ -126,43 +189,28 @@ def init_bot():
     dispatcher.add_handler(CommandHandler("help", help_command))
     dispatcher.add_handler(CommandHandler("clear", clear_data))
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, process_crash_points))
+    dispatcher.add_handler(MessageHandler(Filters.regex(r"^(yes|no)$"), process_feedback))
+    dispatcher.add_handler(MessageHandler(Filters.regex(r"^\d+(\.\d+)?$"), process_actual_value))
     dispatcher.add_error_handler(error_handler)
 
-    return updater
+    # Webhook setup for Heroku deployment
+    if os.getenv("HEROKU_APP_NAME"):
+        HEROKU_URL = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/"
+        webhook_url = f"{HEROKU_URL}{TOKEN}"
+        logger.info(f"Starting webhook on {webhook_url}")
+        updater.start_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=TOKEN,
+            webhook_url=webhook_url
+        )
+    else:
+        logger.info("Starting polling mode (local testing)")
+        updater.start_polling()
 
-
-# Flask App for Gunicorn Compatibility
-app = Flask(__name__)
-updater = init_bot()
-
-@app.route('/<token>', methods=['POST'])
-def webhook(token):
-    if updater and token == os.getenv("TELEGRAM_BOT_TOKEN"):
-        # Pass the request body to the Telegram bot
-        update = Update.de_json(request.json, updater.bot)
-        updater.dispatcher.process_update(update)
-    return '', 200
-
-
-@app.route('/')
-def index():
-    return "Aviator Prediction Bot is running!", 200
+    # Run the bot
+    updater.idle()
 
 
 if __name__ == "__main__":
-    if updater:
-        HEROKU_APP_NAME = os.getenv("HEROKU_APP_NAME")
-        if HEROKU_APP_NAME:
-            HEROKU_URL = f"https://{HEROKU_APP_NAME}.herokuapp.com/"
-            webhook_url = f"{HEROKU_URL}{os.getenv('TELEGRAM_BOT_TOKEN')}"
-            logger.info(f"Starting webhook on {webhook_url}")
-            updater.start_webhook(
-                listen="0.0.0.0",
-                port=int(os.getenv("PORT", "8443")),
-                url_path=os.getenv("TELEGRAM_BOT_TOKEN"),
-                webhook_url=webhook_url
-            )
-        else:
-            logger.info("Starting polling mode (local testing)")
-            updater.start_polling()
-        updater.idle()
+    main()
