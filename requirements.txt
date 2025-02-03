@@ -6,7 +6,3 @@ scikit-learn
 joblib
 pandas
 numpy
-scikit-learn
-joblib
-pandas
-numpy
