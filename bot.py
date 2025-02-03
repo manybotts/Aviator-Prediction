@@ -42,7 +42,7 @@ def predict_aviator_outcome(crash_points):
     # Ensure there are enough data points
     count = len(numbers)
     if count == 0:
-        return "No valid crash points found. Please provide numeric data."
+        return "No valid crash points found. Please provide numeric data.", None
 
     # Update the model with new data
     if count > 1:
@@ -67,6 +67,32 @@ def predict_aviator_outcome(crash_points):
     return result, predicted_outcome
 
 
+# Function to update the model based on feedback
+def update_model_with_feedback(feedback, actual_value, predicted_value):
+    global model
+
+    if feedback.lower() == "yes":
+        logger.info("Feedback: Prediction was correct.")
+    elif feedback.lower() == "no":
+        logger.info("Feedback: Prediction was incorrect. Updating model...")
+
+        # Add the actual value to the dataset
+        historical_data.append(str(actual_value))
+
+        # Retrain the model with the updated dataset
+        numbers = [float(point) for point in historical_data]
+        if len(numbers) > 1:
+            df = pd.DataFrame({"CrashPoints": numbers[:-1], "NextOutcome": numbers[1:]})
+            X = df[["CrashPoints"]].values
+            y = df["NextOutcome"].values
+            model.fit(X, y)
+
+            # Save the updated model
+            dump(model, "random_forest_model.joblib")
+    else:
+        logger.warning("Invalid feedback received.")
+
+
 # Command handlers
 def start(update: Update, context: CallbackContext):
     update.message.reply_text(
@@ -88,6 +114,55 @@ def clear_data(update: Update, context: CallbackContext):
     historical_data = []
     feedback_data = []
     update.message.reply_text("Historical data and feedback have been cleared.")
+
+
+# Message handler for crash points
+def process_crash_points(update: Update, context: CallbackContext):
+    global historical_data
+
+    # Extract crash points from message
+    input_data = update.message.text.strip()
+    new_crash_points = [point.strip() for point in input_data.split(",") if point.strip()]
+
+    # Add new crash points to historical data
+    historical_data.extend(new_crash_points)
+
+    # Predict next outcome
+    prediction_message, predicted_value = predict_aviator_outcome(historical_data)
+    update.message.reply_text(prediction_message)
+
+    # Store the predicted value for later feedback
+    context.user_data["predicted_value"] = predicted_value
+
+
+# Message handler for feedback
+def process_feedback(update: Update, context: CallbackContext):
+    feedback = update.message.text.strip().lower()
+    predicted_value = context.user_data.get("predicted_value")
+
+    if predicted_value is None:
+        update.message.reply_text("No recent prediction found. Please enter crash points first.")
+        return
+
+    # Ask for the actual value
+    update.message.reply_text("Please provide the actual value for the last prediction:")
+    context.user_data["feedback"] = feedback
+
+
+# Handle actual value input
+def process_actual_value(update: Update, context: CallbackContext):
+    actual_value = update.message.text.strip()
+    feedback = context.user_data.get("feedback")
+    predicted_value = context.user_data.get("predicted_value")
+
+    if not re.match(r'^\d+(\.\d+)?$', actual_value) or float(actual_value) <= 0:
+        update.message.reply_text("Invalid actual value. Please provide a positive number.")
+        return
+
+    # Update the model with feedback
+    update_model_with_feedback(feedback, float(actual_value), predicted_value)
+
+    update.message.reply_text("Thank you for your feedback! The model has been updated.")
 
 
 # Flask App for Gunicorn Compatibility
@@ -134,6 +209,12 @@ def init_bot():
 
 updater = init_bot()  # Initialize the Telegram bot globally
 
+# Error handler
+def error_handler(update: object, context: CallbackContext):
+    logger.error(f"Update {update} caused error {context.error}")
+    context.bot.send_message(chat_id=update.effective_chat.id, text="An unexpected error occurred.")
+
+
 # Main function
 def main():
     if not updater:
@@ -160,4 +241,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
