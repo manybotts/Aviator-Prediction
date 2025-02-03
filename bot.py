@@ -107,6 +107,10 @@ def main():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     PORT = int(os.getenv("PORT", "8443"))
 
+    if not TOKEN:
+        logger.error(" TELEGRAM_BOT_TOKEN environment variable is missing.")
+        return
+
     # Initialize the bot
     updater = Updater(TOKEN, use_context=True)
     dispatcher = updater.dispatcher
@@ -121,8 +125,16 @@ def main():
     # Webhook setup for Heroku deployment
     if os.getenv("HEROKU_APP_NAME"):
         HEROKU_URL = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/"
-        updater.start_webhook(listen="0.0.0.0", port=PORT, url_path=TOKEN, webhook_url=HEROKU_URL + TOKEN)
+        webhook_url = f"{HEROKU_URL}{TOKEN}"
+        logger.info(f"Starting webhook on {webhook_url}")
+        updater.start_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=TOKEN,
+            webhook_url=webhook_url
+        )
     else:
+        logger.info("Starting polling mode (local testing)")
         updater.start_polling()
 
     # Run the bot
