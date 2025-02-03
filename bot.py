@@ -1,7 +1,7 @@
 # Aviator Prediction Telegram Bot with Reinforcement Learning (Using Telegram Channel for Storage)
 
 import logging
-from telegram import Update, InputFile
+from telegram import Update, InputFile, Bot
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 import re
 import os
@@ -29,10 +29,15 @@ def load_or_train_model(context):
 
     if MODEL_FILE_ID:
         try:
+            # Initialize the Bot instance
+            bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
+
             # Download the model file from the Telegram channel
-            file_info = context.bot.get_file(MODEL_FILE_ID)
+            file_info = bot.get_file(MODEL_FILE_ID)
             file_path = file_info.file_path
-            response = context.bot.request.get(file_path)
+            response = bot.request.get(file_path)
+
+            # Save the downloaded file locally
             with open("random_forest_model.joblib", "wb") as f:
                 f.write(response.content)
             logger.info("Model file downloaded successfully.")
@@ -106,10 +111,14 @@ def update_model_with_feedback(feedback, actual_value, predicted_value, context)
             dump(model, "random_forest_model.joblib")
 
             # Upload the updated model to the Telegram channel
-            with open("random_forest_model.joblib", "rb") as f:
-                sent_file = context.bot.send_document(chat_id=CHANNEL_ID, document=InputFile(f))
-                MODEL_FILE_ID = sent_file.document.file_id
-                logger.info("Updated model file uploaded to Telegram channel.")
+            try:
+                bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
+                with open("random_forest_model.joblib", "rb") as f:
+                    sent_file = bot.send_document(chat_id=CHANNEL_ID, document=f)
+                    MODEL_FILE_ID = sent_file.document.file_id
+                    logger.info("Updated model file uploaded to Telegram channel.")
+            except Exception as e:
+                logger.error(f"Failed to upload model to Telegram: {e}")
     else:
         logger.warning("Invalid feedback received.")
 
