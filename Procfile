@@ -1,1 +1,1 @@
-web: gunicorn bot:updater.start_webhook --workers 1 --timeout 120
+web: gunicorn bot:app --workers 1 --timeout 120
