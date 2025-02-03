@@ -1,7 +1,7 @@
-# Aviator Prediction Telegram Bot with Reinforcement Learning
+# Aviator Prediction Telegram Bot with Reinforcement Learning (Using Telegram Channel for Storage)
 
 import logging
-from telegram import Update
+from telegram import Update, InputFile
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 import re
 import os
@@ -19,18 +19,33 @@ logger = logging.getLogger(__name__)
 historical_data = []
 feedback_data = []
 
-# Load or train the ML model
-def load_or_train_model():
-    model_path = "random_forest_model.joblib"
-    if os.path.exists(model_path):
-        return load(model_path)
-    else:
-        # Train a new model if no saved model exists
-        model = RandomForestRegressor(n_estimators=100, random_state=42)
-        dump(model, model_path)
-        return model
+# Define the channel ID and file ID for the model
+CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+MODEL_FILE_ID = os.getenv("TELEGRAM_MODEL_FILE_ID")
 
-model = load_or_train_model()
+# Load or train the ML model
+def load_or_train_model(context):
+    global MODEL_FILE_ID
+
+    if MODEL_FILE_ID:
+        try:
+            # Download the model file from the Telegram channel
+            file_info = context.bot.get_file(MODEL_FILE_ID)
+            file_path = file_info.file_path
+            response = context.bot.request.get(file_path)
+            with open("random_forest_model.joblib", "wb") as f:
+                f.write(response.content)
+            logger.info("Model file downloaded successfully.")
+            return load("random_forest_model.joblib")
+        except Exception as e:
+            logger.error(f"Failed to download model from Telegram: {e}")
+
+    # If no model exists, train a new one
+    logger.info("Training a new model...")
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    dump(model, "random_forest_model.joblib")
+    return model
+
 
 # Function to predict next outcome using ML
 def predict_aviator_outcome(crash_points):
@@ -68,8 +83,8 @@ def predict_aviator_outcome(crash_points):
 
 
 # Function to update the model based on feedback
-def update_model_with_feedback(feedback, actual_value, predicted_value):
-    global model
+def update_model_with_feedback(feedback, actual_value, predicted_value, context):
+    global model, MODEL_FILE_ID
 
     if feedback.lower() == "yes":
         logger.info("Feedback: Prediction was correct.")
@@ -89,6 +104,12 @@ def update_model_with_feedback(feedback, actual_value, predicted_value):
 
             # Save the updated model
             dump(model, "random_forest_model.joblib")
+
+            # Upload the updated model to the Telegram channel
+            with open("random_forest_model.joblib", "rb") as f:
+                sent_file = context.bot.send_document(chat_id=CHANNEL_ID, document=InputFile(f))
+                MODEL_FILE_ID = sent_file.document.file_id
+                logger.info("Updated model file uploaded to Telegram channel.")
     else:
         logger.warning("Invalid feedback received.")
 
@@ -160,9 +181,15 @@ def process_actual_value(update: Update, context: CallbackContext):
         return
 
     # Update the model with feedback
-    update_model_with_feedback(feedback, float(actual_value), predicted_value)
+    update_model_with_feedback(feedback, float(actual_value), predicted_value, context)
 
     update.message.reply_text("Thank you for your feedback! The model has been updated.")
+
+
+# Error handler
+def error_handler(update: object, context: CallbackContext):
+    logger.error(f"Update {update} caused error {context.error}")
+    context.bot.send_message(chat_id=update.effective_chat.id, text="An unexpected error occurred. Please try again later.")
 
 
 # Flask App for Gunicorn Compatibility
@@ -187,13 +214,19 @@ def index():
 def init_bot():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     PORT = int(os.getenv("PORT", "8443"))
+    CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+    MODEL_FILE_ID = os.getenv("TELEGRAM_MODEL_FILE_ID")
 
-    if not TOKEN:
-        logger.error(" TELEGRAM_BOT_TOKEN environment variable is missing.")
+    if not TOKEN or not CHANNEL_ID or not MODEL_FILE_ID:
+        logger.error("Missing required environment variables.")
         return None
 
     updater = Updater(TOKEN, use_context=True)
     dispatcher = updater.dispatcher
+
+    # Load or train the model
+    global model
+    model = load_or_train_model(dispatcher.bot)
 
     # Add handlers
     dispatcher.add_handler(CommandHandler("start", start))
@@ -202,18 +235,14 @@ def init_bot():
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, process_crash_points))
     dispatcher.add_handler(MessageHandler(Filters.regex(r"^(yes|no)$"), process_feedback))
     dispatcher.add_handler(MessageHandler(Filters.regex(r"^\d+(\.\d+)?$"), process_actual_value))
+
+    # Add error handler
     dispatcher.add_error_handler(error_handler)
 
     return updater
 
 
 updater = init_bot()  # Initialize the Telegram bot globally
-
-# Error handler
-def error_handler(update: object, context: CallbackContext):
-    logger.error(f"Update {update} caused error {context.error}")
-    context.bot.send_message(chat_id=update.effective_chat.id, text="An unexpected error occurred.")
-
 
 # Main function
 def main():
