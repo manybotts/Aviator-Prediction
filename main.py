@@ -6,6 +6,11 @@ from prediction_models import load_or_train_models, predict_aviator_outcome
 from dynamic_strategy import update_model_performance
 from learning_stats import stats_command
 import os
+import logging
+
+# Enable logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Flask App for Gunicorn Compatibility
 app = Flask(__name__)  # Define the Flask app here
@@ -100,7 +105,7 @@ def init_bot():
     dispatcher = updater.dispatcher
 
     # Load or train models
-    load_or_train_models()
+    load_or_train_models(dispatcher)
 
     # Add handlers
     conv_handler = get_conversation_handler()
