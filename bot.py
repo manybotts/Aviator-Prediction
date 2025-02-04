@@ -1,8 +1,15 @@
-# Aviator Prediction Telegram Bot with Reinforcement Learning (Using Telegram Channel for Storage)
+# Aviator Prediction Telegram Bot with Reinforcement Learning (Using ConversationHandler)
 
 import logging
-from telegram import Update, InputFile, Bot
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import (
+    Updater,
+    CommandHandler,
+    MessageHandler,
+    Filters,
+    ConversationHandler,
+    CallbackContext,
+)
 import re
 import os
 import numpy as np
@@ -15,6 +22,9 @@ import requests
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Define conversation states
+WAITING_FOR_CRASH_POINTS, WAITING_FOR_FEEDBACK, WAITING_FOR_ACTUAL_VALUE = range(3)
 
 # Store historical crash points and feedback
 historical_data = []
@@ -34,7 +44,7 @@ def load_or_train_model(context):
     if MODEL_FILE_ID:
         try:
             # Initialize the Bot instance
-            bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
+            bot = context.bot
 
             # Get the file path from Telegram
             file_info = bot.get_file(MODEL_FILE_ID)
@@ -112,7 +122,7 @@ def regenerate_and_upload_model(context):
 
     # Upload the new model to Telegram
     try:
-        bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
+        bot = context.bot
         with open(model_file, "rb") as f:
             sent_file = bot.send_document(chat_id=CHANNEL_ID, document=f)
             MODEL_FILE_ID = sent_file.document.file_id
@@ -159,49 +169,15 @@ def predict_aviator_outcome(crash_points):
     return result, predicted_outcome
 
 
-# Function to update the model based on feedback
-def update_model_with_feedback(feedback, actual_value, predicted_value, context):
-    global model, MODEL_FILE_ID
-
-    if feedback.lower() == "yes":
-        logger.info("Feedback: Prediction was correct.")
-    elif feedback.lower() == "no":
-        logger.info("Feedback: Prediction was incorrect. Updating model...")
-
-        # Add the actual value to the dataset
-        historical_data.append(str(actual_value))
-
-        # Retrain the model with the updated dataset
-        numbers = [float(point) for point in historical_data]
-        if len(numbers) > 1:
-            df = pd.DataFrame({"CrashPoints": numbers[:-1], "NextOutcome": numbers[1:]})
-            X = df[["CrashPoints"]].values
-            y = df["NextOutcome"].values
-            model.fit(X, y)
-
-            # Save the updated model
-            dump(model, "random_forest_model.joblib")
-
-            # Upload the updated model to the Telegram channel
-            try:
-                bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
-                with open("random_forest_model.joblib", "rb") as f:
-                    sent_file = bot.send_document(chat_id=CHANNEL_ID, document=f)
-                    MODEL_FILE_ID = sent_file.document.file_id
-                    logger.info("Updated model file uploaded to Telegram channel.")
-            except Exception as e:
-                logger.error(f"Failed to upload model to Telegram: {e}")
-    else:
-        logger.warning("Invalid feedback received.")
-
-
-# Command handlers
+# Start command
 def start(update: Update, context: CallbackContext):
     update.message.reply_text(
         "Welcome to the Aviator Prediction Bot! Enter crash points separated by commas to get predictions."
     )
+    return WAITING_FOR_CRASH_POINTS
 
 
+# Help command
 def help_command(update: Update, context: CallbackContext):
     update.message.reply_text(
         "To use this bot:\n"
@@ -209,22 +185,22 @@ def help_command(update: Update, context: CallbackContext):
         "- The bot will analyze the data and predict the next outcome.\n"
         "- Provide feedback ('yes' or 'no') to help the bot learn."
     )
+    return WAITING_FOR_CRASH_POINTS
 
 
+# Clear data command
 def clear_data(update: Update, context: CallbackContext):
     global historical_data, feedback_data
     historical_data = []
     feedback_data = []
     context.user_data.clear()  # Clear user-specific data
     update.message.reply_text("Historical data and feedback have been cleared.")
+    return WAITING_FOR_CRASH_POINTS
 
 
-# Message handler for crash points
+# Process crash points
 def process_crash_points(update: Update, context: CallbackContext):
     global historical_data
-
-    # Reset user state
-    context.user_data["state"] = "waiting_for_feedback"
 
     # Extract crash points from message
     input_data = update.message.text.strip()
@@ -239,49 +215,85 @@ def process_crash_points(update: Update, context: CallbackContext):
 
     # Store the predicted value for later feedback
     context.user_data["predicted_value"] = predicted_value
+    return WAITING_FOR_FEEDBACK
 
 
-# Message handler for feedback
+# Process feedback
 def process_feedback(update: Update, context: CallbackContext):
     feedback = update.message.text.strip().lower()
     predicted_value = context.user_data.get("predicted_value")
 
     if predicted_value is None:
         update.message.reply_text("No recent prediction found. Please enter crash points first.")
-        return
+        return WAITING_FOR_CRASH_POINTS
 
     if feedback not in ["yes", "no"]:
         update.message.reply_text("Invalid feedback. Please reply with 'yes' or 'no'.")
-        return
+        return WAITING_FOR_FEEDBACK
 
-    # Transition to waiting for actual value if feedback is 'no'
     if feedback == "yes":
         update.message.reply_text("Thank you for your feedback! The model will continue learning.")
         context.user_data.clear()  # Reset user state
+        return WAITING_FOR_CRASH_POINTS
+
     elif feedback == "no":
         update.message.reply_text("Please provide the actual value for the last prediction:")
-        context.user_data["state"] = "waiting_for_actual_value"
+        return WAITING_FOR_ACTUAL_VALUE
 
 
-# Handle actual value input
+# Process actual value
 def process_actual_value(update: Update, context: CallbackContext):
     actual_value = update.message.text.strip()
-    feedback = context.user_data.get("state")
     predicted_value = context.user_data.get("predicted_value")
-
-    if feedback != "waiting_for_actual_value":
-        update.message.reply_text("Unexpected input. Please follow the bot's instructions.")
-        return
 
     if not re.match(r'^\d+(\.\d+)?$', actual_value) or float(actual_value) <= 0:
         update.message.reply_text("Invalid actual value. Please provide a positive number.")
-        return
+        return WAITING_FOR_ACTUAL_VALUE
 
     # Update the model with feedback
     update_model_with_feedback("no", float(actual_value), predicted_value, context)
 
     update.message.reply_text("Thank you for your feedback! The model has been updated.")
     context.user_data.clear()  # Reset user state
+    return WAITING_FOR_CRASH_POINTS
+
+
+# Function to update the model based on feedback
+def update_model_with_feedback(feedback, actual_value, predicted_value, context):
+    global model, MODEL_FILE_ID
+
+    logger.info("Updating model based on feedback...")
+
+    # Add the actual value to the dataset
+    historical_data.append(str(actual_value))
+
+    # Retrain the model with the updated dataset
+    numbers = [float(point) for point in historical_data]
+    if len(numbers) > 1:
+        df = pd.DataFrame({"CrashPoints": numbers[:-1], "NextOutcome": numbers[1:]})
+        X = df[["CrashPoints"]].values
+        y = df["NextOutcome"].values
+        model.fit(X, y)
+
+        # Save the updated model
+        dump(model, "random_forest_model.joblib")
+
+        # Upload the updated model to the Telegram channel
+        try:
+            bot = context.bot
+            with open("random_forest_model.joblib", "rb") as f:
+                sent_file = bot.send_document(chat_id=CHANNEL_ID, document=f)
+                MODEL_FILE_ID = sent_file.document.file_id
+                logger.info("Updated model file uploaded to Telegram channel.")
+        except Exception as e:
+            logger.error(f"Failed to upload model to Telegram: {e}")
+
+
+# Cancel command
+def cancel(update: Update, context: CallbackContext):
+    update.message.reply_text("Operation canceled. You can start over by entering crash points.")
+    context.user_data.clear()  # Reset user state
+    return WAITING_FOR_CRASH_POINTS
 
 
 # Error handler
@@ -324,17 +336,29 @@ def init_bot():
 
     # Load or train the model
     global model
-    model = load_or_train_model(dispatcher.bot)
+    model = load_or_train_model(dispatcher)
+
+    # Define conversation handler
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            WAITING_FOR_CRASH_POINTS: [
+                MessageHandler(Filters.text & ~Filters.command, process_crash_points),
+            ],
+            WAITING_FOR_FEEDBACK: [
+                MessageHandler(Filters.regex(r"^(yes|no)$"), process_feedback),
+            ],
+            WAITING_FOR_ACTUAL_VALUE: [
+                MessageHandler(Filters.regex(r"^\d+(\.\d+)?$"), process_actual_value),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
 
     # Add handlers
-    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.add_handler(conv_handler)
     dispatcher.add_handler(CommandHandler("help", help_command))
     dispatcher.add_handler(CommandHandler("clear", clear_data))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, process_crash_points))
-    dispatcher.add_handler(MessageHandler(Filters.regex(r"^(yes|no)$"), process_feedback))
-    dispatcher.add_handler(MessageHandler(Filters.regex(r"^\d+(\.\d+)?$"), process_actual_value))
-
-    # Add error handler
     dispatcher.add_error_handler(error_handler)
 
     return updater
