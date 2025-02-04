@@ -58,7 +58,7 @@ def load_or_train_model(context):
 
                 # Check if the file is valid
                 if validate_model_file(model_file):
-                    model = joblib.load(model_file)
+                    model = load(model_file)
                     logger.info("Model file loaded successfully.")
                     return model
                 else:
@@ -91,7 +91,7 @@ def validate_model_file(file_path):
 
     try:
         # Attempt to load the model
-        model = joblib.load(file_path)
+        model = load(file_path)
         logger.info("Model file validation successful.")
         return True
     except Exception as e:
@@ -215,12 +215,16 @@ def clear_data(update: Update, context: CallbackContext):
     global historical_data, feedback_data
     historical_data = []
     feedback_data = []
+    context.user_data.clear()  # Clear user-specific data
     update.message.reply_text("Historical data and feedback have been cleared.")
 
 
 # Message handler for crash points
 def process_crash_points(update: Update, context: CallbackContext):
     global historical_data
+
+    # Reset user state
+    context.user_data["state"] = "waiting_for_feedback"
 
     # Extract crash points from message
     input_data = update.message.text.strip()
@@ -246,25 +250,38 @@ def process_feedback(update: Update, context: CallbackContext):
         update.message.reply_text("No recent prediction found. Please enter crash points first.")
         return
 
-    # Ask for the actual value
-    update.message.reply_text("Please provide the actual value for the last prediction:")
-    context.user_data["feedback"] = feedback
+    if feedback not in ["yes", "no"]:
+        update.message.reply_text("Invalid feedback. Please reply with 'yes' or 'no'.")
+        return
+
+    # Transition to waiting for actual value if feedback is 'no'
+    if feedback == "yes":
+        update.message.reply_text("Thank you for your feedback! The model will continue learning.")
+        context.user_data.clear()  # Reset user state
+    elif feedback == "no":
+        update.message.reply_text("Please provide the actual value for the last prediction:")
+        context.user_data["state"] = "waiting_for_actual_value"
 
 
 # Handle actual value input
 def process_actual_value(update: Update, context: CallbackContext):
     actual_value = update.message.text.strip()
-    feedback = context.user_data.get("feedback")
+    feedback = context.user_data.get("state")
     predicted_value = context.user_data.get("predicted_value")
+
+    if feedback != "waiting_for_actual_value":
+        update.message.reply_text("Unexpected input. Please follow the bot's instructions.")
+        return
 
     if not re.match(r'^\d+(\.\d+)?$', actual_value) or float(actual_value) <= 0:
         update.message.reply_text("Invalid actual value. Please provide a positive number.")
         return
 
     # Update the model with feedback
-    update_model_with_feedback(feedback, float(actual_value), predicted_value, context)
+    update_model_with_feedback("no", float(actual_value), predicted_value, context)
 
     update.message.reply_text("Thank you for your feedback! The model has been updated.")
+    context.user_data.clear()  # Reset user state
 
 
 # Error handler
