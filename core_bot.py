@@ -1,7 +1,6 @@
 # Core Bot Logic
 
-import logging
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update  # Add this import
 from telegram.ext import (
     Updater,
     CommandHandler,
@@ -10,6 +9,7 @@ from telegram.ext import (
     ConversationHandler,
     CallbackContext,
 )
+import logging
 import os
 
 # Enable logging
