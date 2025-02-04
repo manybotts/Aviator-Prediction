@@ -1,5 +1,7 @@
 # Dynamic Strategy Switching
 
+from telegram import Update  # Add this import
+from telegram.ext import CallbackContext  # Add this import
 import logging
 import os
 import json
@@ -30,7 +32,7 @@ def switch_strategy(context):
 
     # Find the best-performing model
     best_model = max(accuracies, key=accuracies.get)
-    if accuracies[best_model] < 0.6:  # Switch if accuracy is below 60%
+    if accuracies[best_model] < 0.6:  # Switch if accuracy drops below 60%
         logger.info("Accuracy below threshold. Switching strategy...")
         candidates = ["random_forest", "linear_regression", "lstm"]
         candidates.remove(current_strategy)  # Exclude the current strategy
