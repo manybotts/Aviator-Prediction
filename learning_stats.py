@@ -1,12 +1,8 @@
 # Learning History and Stats
 
-from telegram import Update  # Import Update
-from telegram.ext import CallbackContext  # Import CallbackContext
+from telegram import Update  # Add this import
+from telegram.ext import CallbackContext  # Add this import
 import json
-
-# Global variable for model performance
-model_performance = {"random_forest": [], "linear_regression": [], "lstm": []}
-
 
 # Get learning stats
 def get_learning_stats():
