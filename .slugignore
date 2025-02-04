@@ -1,0 +1,12 @@
+# Ignore cache and temporary files
+__pycache__/
+*.pyc
+
+# Ignore large model files (if not needed during deployment)
+random_forest_model.joblib
+linear_regression_model.joblib
+lstm_model.h5
+
+# Ignore logs and other generated files
+logs/
+*.log
